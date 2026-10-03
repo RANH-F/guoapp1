@@ -1,0 +1,89 @@
+name: Sync upstream and build
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/jerunshi/guoapp1.git 2>/dev/null ||             git remote set-url upstream https://github.com/jerunshi/guoapp1.git
+          git fetch upstream main --prune
+
+      - name: Sync upstream/main into fork main
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          before="$(git rev-parse HEAD)"
+          upstream_sha="$(git rev-parse upstream/main)"
+
+          echo "Fork HEAD:     $before"
+          echo "Upstream HEAD: $upstream_sha"
+
+          if git merge-base --is-ancestor "$upstream_sha" "$before"; then
+            echo "Fork already contains the latest upstream commit."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "new_sha=$before" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git merge --no-edit upstream/main; then
+            git merge --abort || true
+            echo "::error::Automatic upstream merge failed. Resolve the conflict manually, then rerun this workflow."
+            exit 1
+          fi
+
+          after="$(git rev-parse HEAD)"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "new_sha=$after" >> "$GITHUB_OUTPUT"
+          echo "Synced to: $after"
+
+      - name: Push synchronized main
+        if: steps.sync.outputs.changed == 'true'
+        run: git push origin HEAD:main
+
+      - name: Trigger package build
+        if: steps.sync.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run build.yml --ref main
+          echo "Triggered Build app packages on main."
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## Upstream sync"
+            echo
+            echo "- Upstream: `jerunshi/guoapp1:main`"
+            echo "- Fork: `RANH-F/guoapp1:main`"
+            echo "- Changed: `${{ steps.sync.outputs.changed }}`"
+            echo "- Checked every 6 hours and on manual dispatch."
+            echo "- When upstream changes, `build.yml` is dispatched automatically."
+          } >> "$GITHUB_STEP_SUMMARY"
