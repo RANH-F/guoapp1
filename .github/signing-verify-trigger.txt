@@ -1,0 +1,1 @@
+Verify fixed Android release signing.
